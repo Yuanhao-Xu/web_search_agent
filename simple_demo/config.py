@@ -1,14 +1,15 @@
-# API配置
-# 请将以下值替换为您的实际API密钥
+# ====================================
+# 核心API配置
+# ====================================
 
-DEEPSEEK_API_KEY = "your_deepseek_api_key_here"
-TAVILY_API_KEY = "your_tavily_api_key_here"
+# DeepSeek API配置
+# 获取地址：https://platform.deepseek.com/
+DEEPSEEK_API_KEY = "sk-f5889d58c6db4dd38ca78389a6c7a7e8"
+DEEPSEEK_API_URL = "https://api.deepseek.com"
+DEEPSEEK_MODEL_NAME="deepseek-chat"
 
-# 或者从环境变量读取（如果设置了的话）
-import os
+# Tavily搜索API配置
+# 获取地址：https://tavily.com/
+TAVILY_API_KEY = "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"
+TAVILY_API_URL = "https://api.tavily.com"
 
-if os.getenv("DEEPSEEK_API_KEY"):
-    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-    
-if os.getenv("TAVILY_API_KEY"):
-    TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")

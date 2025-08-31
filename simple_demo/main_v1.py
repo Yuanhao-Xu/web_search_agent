@@ -3,24 +3,23 @@ import asyncio
 import aiohttp
 from typing import Optional
 
-# 加载.env文件中的环境变量
-try:
-    from dotenv import load_dotenv
-    load_dotenv()  # 自动查找并加载.env文件
-    print("成功加载.env文件")
-except ImportError:
-    print("python-dotenv未安装，跳过.env文件加载")
-except Exception as e:
-    print(f"加载.env文件时出错: {e}")
 
-# 尝试导入配置文件
+# 导入配置
 try:
     from config import DEEPSEEK_API_KEY, TAVILY_API_KEY
-    print("使用配置文件中的API密钥")
 except ImportError:
-    print("配置文件不存在，尝试使用环境变量")
-    DEEPSEEK_API_KEY = None
-    TAVILY_API_KEY = None
+    print("错误：找不到 config.py 文件")
+    print("请创建 config.py 并添加 API 密钥")
+    exit(1)
+
+# 验证配置
+assert DEEPSEEK_API_KEY and not DEEPSEEK_API_KEY.startswith("your_"), \
+    "请在 config.py 中配置 DEEPSEEK_API_KEY"
+assert TAVILY_API_KEY and not TAVILY_API_KEY.startswith("your_"), \
+    "请在 config.py 中配置 TAVILY_API_KEY"
+
+print("配置加载成功")
+
 
 class SimpleAgent:
     """最简单的Agent实现"""
