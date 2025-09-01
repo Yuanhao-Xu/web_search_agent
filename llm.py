@@ -32,6 +32,7 @@ class LLM:
                  max_tokens: int = 4096,
                  stream: bool = False):
 
+        # 异步openai（AsyncOpenAI）用于支持异步API调用，可以在不阻塞主线程的情况下并发处理多个请求，提高程序的并发能力和响应速度，特别适合需要同时处理大量LLM请求或与其他异步操作（如网络IO、数据库等）协作的场景。
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
         self.temperature = temperature
@@ -52,6 +53,9 @@ class LLM:
     
     def get_history(self) -> List[Dict]:
         """获取对话历史"""
+        # 这里使用.copy()而不是直接返回self.conversation_history，是为了防止外部代码直接修改内部的对话历史数据。
+        # 如果直接返回self.conversation_history，外部拿到的是同一个列表对象，外部对其增删改会影响到LLM实例内部的历史记录，可能导致不可预期的bug。
+        # 使用.copy()返回一个浅拷贝，外部即使修改返回的列表，也不会影响到原始的conversation_history，保证了数据的封装性和安全性。
         return self.conversation_history.copy()
 
     async def chat(self,
@@ -77,12 +81,24 @@ class LLM:
             ChatCompletionMessage: OpenAI格式的回复
         """
         try:
-            # 决定使用的消息
+            # 三种情况 1. 没有提供消息且未启用历史记录 2. 提供了消息 3. 提供了消息且启用历史记录
+            # 这里判断 messages 是否为 None 且 use_history 为 True，是为了决定本次请求要用什么消息内容：
+            # - 如果 messages 为空且 use_history=True，说明用户希望直接用历史对话作为上下文（多轮对话场景）。
+            # - 如果 messages 不为空，则优先使用传入的 messages（如临时自定义上下文）。
+            # - 否则两者都不满足，既没有传入消息，也不打算用历史，无法生成有效请求，抛出异常。
+            # 如果用户希望在接受历史消息的同时传入新消息→先用 get_history() 拿到历史，再把新消息 append 进去，作为 messages 传入。
             if messages is None and use_history:
                 messages_to_use = self.conversation_history
             elif messages is not None:
                 messages_to_use = messages
             else:
+                # raise 是 Python 用于主动抛出异常的关键字。当检测到错误或不符合预期的情况时，可以用 raise 抛出异常（如 ValueError），中断流程并交由上层处理。
+                # 如果想保存异常信息，可以用 try...except 捕获异常，并将异常对象保存到日志文件、数据库或变量中。例如：
+                # try:
+                #     raise ValueError("没有提供消息且未启用历史记录")
+                # except Exception as e:
+                #     with open("error.log", "a", encoding="utf-8") as f:
+                #         f.write(str(e) + "\n")
                 raise ValueError("没有提供消息且未启用历史记录")
             
             # 构建请求参数
@@ -95,18 +111,34 @@ class LLM:
             }
             
             # 处理工具调用
+            # tools: Optional[List[Dict]] = None
+            # 当 tools 为 None、空列表 []、空字符串 ""、0、False 等“假值”时，if tools 判断为 False，不会进入分支。
+            # 当 tools 为非空列表（如有 function schema 的工具），if tools 判断为 True，会进入分支。
             if tools:
                 request_params["tools"] = tools
                 request_params["tool_choice"] = self.tool_choice if tool_choice is None else tool_choice
-
             # 调用API
             if not request_params["stream"]:
                 # 非流式请求
                 response = await self.client.chat.completions.create(**request_params)
+                # 这里是调用 self.client.chat.completions.create 方法，并将 request_params 字典中的所有键值对作为关键字参数传递给该方法。
+                # **request_params 是 Python 的“字典解包”语法，可以把一个字典的每个键值对都当作独立的参数传递给函数。
+                # 例如，如果 request_params = {"model": "xxx", "messages": [...]}
+                # 那么 create(model="xxx", messages=[...]) 效果等同于 create(**request_params)
                 
                 # 如果使用历史记录，添加到对话历史
                 if use_history:
+                    # response 是 OpenAI 格式的返回对象，结构大致如下：
+                    # response.choices[0].message 代表本次回复的消息对象
+                    # 其中 message.content 是助手回复的文本内容（如 "你好，有什么可以帮您？"）
+                    # message.tool_calls 是工具调用的列表（如有 function call，则为列表，否则为 None）
+                    # 这里取到的 response.choices[0].message.content 就是本次助手回复的文本
+                    # response.choices[0].message.tool_calls 是本次回复涉及的工具调用（如有）
+
                     if response.choices[0].message.content:
+                        # 这里是将助手的回复内容添加到对话历史（conversation_history）中，而不是 message 变量本身。
+                        # 原因：message 只是本次API返回的单条消息对象，而 conversation_history 记录了整个对话的历史（包括用户和助手的所有消息），
+                        # 这样下次调用时可以带上完整历史，实现多轮对话记忆。
                         self.conversation_history.append({
                             "role": "assistant",
                             "content": response.choices[0].message.content
@@ -115,11 +147,62 @@ class LLM:
                         self.conversation_history.append({
                             "role": "assistant",
                             "content": None,
+                            # tc 是工具调用对象（如 OpenAI 的 ToolCall 对象），它有 model_dump() 方法用于将对象序列化为字典。
+                            # 这里遍历 response.choices[0].message.tool_calls，每个 tc 都调用 model_dump()，得到标准字典结构。
+                            
+                            # response: ChatCompletion 对象（Pydantic 模型）
+                            # response.choices: List[ChatCompletionChoice] —— 多个候选回复
+                            # response.choices[0].message: ChatCompletionMessage —— 单条消息
+                            # response.choices[0].message.tool_calls: List[ChatCompletionMessageToolCall] —— 工具调用列表
+                            # 单个 tool_call: ChatCompletionMessageToolCall —— 包含 id, type, function
+                            # tool_call.function: FunctionCall 对象 —— 包含 name, arguments(JSON 字符串)
                             "tool_calls": [tc.model_dump() for tc in response.choices[0].message.tool_calls]
                         })
                 
                 return response.choices[0].message
-                
+# choices 是一个列表，通常情况下只包含一个对象（即 choices[0]），因为默认情况下模型只生成一个回复（n=1）。
+# 但如果在请求参数中设置 n>1（如 n=2），则 choices 会包含多个回复对象（如 choices[0]、choices[1]），
+# 每个对象代表模型生成的一个不同的回复。大多数应用场景下只用第一个回复（choices[0]）。
+# 非流式响应体实例
+#{
+#     "id": "0d4dcf71-59f3-4c96-a215-3af00ea46499",
+#     "object": "chat.completion",
+#     "created": 1756739467,
+#     "model": "deepseek-chat",
+#     "choices": [
+#         {
+#             "index": 0,
+#             "message": {
+#                 "role": "assistant",
+#                 "content": "我来帮您查询今天北京的天气。",
+#                 "tool_calls": [
+#                     {
+#                         "index": 0,
+#                         "id": "call_00_TD9qtJbJmOkgertc0XM1niwd",
+#                         "type": "function",
+#                         "function": {
+#                             "name": "get_weather",
+#                             "arguments": "{\"location\": \"北京\"}"
+#                         }
+#                     }
+#                 ]
+#             },
+#             "logprobs": null,
+#             "finish_reason": "tool_calls"
+#         }
+#     ],
+#     "usage": {
+#         "prompt_tokens": 180,
+#         "completion_tokens": 22,
+#         "total_tokens": 202,
+#         "prompt_tokens_details": {
+#             "cached_tokens": 128
+#         },
+#         "prompt_cache_hit_tokens": 128,
+#         "prompt_cache_miss_tokens": 52
+#     },
+#     "system_fingerprint": "fp_feb633d1f5_prod0820_fp8_kvcache"
+# }
             else:
                 # 流式请求
                 response = await self.client.chat.completions.create(**request_params)
@@ -183,7 +266,6 @@ class LLM:
                     content=final_content,
                     tool_calls=collected_tool_calls if collected_tool_calls else None
                 )
-
         except Exception as e:
             raise Exception(f"调用API失败: {str(e)}")
     
