@@ -26,12 +26,15 @@ async def tavily_search(query: str, max_results: int = 3) -> str:
         )
         logger.debug("搜索响应: %s", response)
         
+        # response.get("results", []) 的作用是：从 response 字典中获取键 "results" 对应的值，如果没有该键则返回空列表 []
         results = response.get("results", [])
         if not results:
             return f"未找到与'{query}'相关的结果"
         
         output = f"搜索：{query}\n找到{len(results)}个结果：\n\n"
         
+        # enumerate(results, 1) 的意思是：对 results 列表进行枚举，i 是序号（从1开始），result 是每个元素。
+        # 这样可以在遍历搜索结果时，给每个结果一个从1开始的编号，便于展示。
         for i, result in enumerate(results, 1):
             output += f"【{i}】{result.get('title', '无标题')}\n"
             output += f"链接：{result.get('url', '')}\n"
@@ -39,7 +42,6 @@ async def tavily_search(query: str, max_results: int = 3) -> str:
             if len(content) > 200:
                 content = content[:200] + "..."
             output += f"摘要：{content}\n\n"
-        
         return output
         
     except Exception as e:
@@ -58,6 +60,7 @@ tools = [{
                     "type": "string",
                     "description": "搜索关键词或问题"
                 },
+                
                 "max_results": {
                     "type": "integer",
                     "description": "返回结果数量",

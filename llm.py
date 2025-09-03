@@ -160,93 +160,162 @@ class LLM:
                         })
                 
                 return response.choices[0].message
-# choices 是一个列表，通常情况下只包含一个对象（即 choices[0]），因为默认情况下模型只生成一个回复（n=1）。
-# 但如果在请求参数中设置 n>1（如 n=2），则 choices 会包含多个回复对象（如 choices[0]、choices[1]），
-# 每个对象代表模型生成的一个不同的回复。大多数应用场景下只用第一个回复（choices[0]）。
-# 非流式响应体实例
-#{
-#     "id": "0d4dcf71-59f3-4c96-a215-3af00ea46499",
-#     "object": "chat.completion",
-#     "created": 1756739467,
-#     "model": "deepseek-chat",
-#     "choices": [
-#         {
-#             "index": 0,
-#             "message": {
-#                 "role": "assistant",
-#                 "content": "我来帮您查询今天北京的天气。",
-#                 "tool_calls": [
-#                     {
-#                         "index": 0,
-#                         "id": "call_00_TD9qtJbJmOkgertc0XM1niwd",
-#                         "type": "function",
-#                         "function": {
-#                             "name": "get_weather",
-#                             "arguments": "{\"location\": \"北京\"}"
-#                         }
-#                     }
-#                 ]
-#             },
-#             "logprobs": null,
-#             "finish_reason": "tool_calls"
-#         }
-#     ],
-#     "usage": {
-#         "prompt_tokens": 180,
-#         "completion_tokens": 22,
-#         "total_tokens": 202,
-#         "prompt_tokens_details": {
-#             "cached_tokens": 128
-#         },
-#         "prompt_cache_hit_tokens": 128,
-#         "prompt_cache_miss_tokens": 52
-#     },
-#     "system_fingerprint": "fp_feb633d1f5_prod0820_fp8_kvcache"
-# }
+                # choices 是一个列表，通常情况下只包含一个对象（即 choices[0]），因为默认情况下模型只生成一个回复（n=1）。
+                # 但如果在请求参数中设置 n>1（如 n=2），则 choices 会包含多个回复对象（如 choices[0]、choices[1]），
+                # 每个对象代表模型生成的一个不同的回复。大多数应用场景下只用第一个回复（choices[0]）。
+                # 非流式响应体实例
+                #{
+                #     "id": "0d4dcf71-59f3-4c96-a215-3af00ea46499",
+                #     "object": "chat.completion",
+                #     "created": 1756739467,
+                #     "model": "deepseek-chat",
+                #     "choices": [
+                #         {
+                #             "index": 0,
+                #             "message": {
+                #                 "role": "assistant",
+                #                 "content": "我来帮您查询今天北京的天气。",
+                #                 "tool_calls": [
+                #                     {
+                #                         "index": 0,
+                #                         "id": "call_00_TD9qtJbJmOkgertc0XM1niwd",
+                #                         "type": "function",
+                #                         "function": {
+                #                             "name": "get_weather",
+                #                             "arguments": "{\"location\": \"北京\"}"
+                #                         }
+                #                     }
+                #                 ]
+                #             },
+                #             "logprobs": null,
+                #             "finish_reason": "tool_calls"
+                #         }
+                #     ],
+                #     "usage": {
+                #         "prompt_tokens": 180,
+                #         "completion_tokens": 22,
+                #         "total_tokens": 202,
+                #         "prompt_tokens_details": {
+                #             "cached_tokens": 128
+                #         },
+                #         "prompt_cache_hit_tokens": 128,
+                #         "prompt_cache_miss_tokens": 52
+                #     },
+                #     "system_fingerprint": "fp_feb633d1f5_prod0820_fp8_kvcache"
+                # }
             else:
                 # 流式请求
                 response = await self.client.chat.completions.create(**request_params)
+                # await 用于异步编程，表示在此处“等待”一个异步操作完成（如网络请求、IO等），但不会阻塞整个线程。
+                # 在这里，await self.client.chat.completions.create(**request_params) 表示异步地向 LLM 服务发送请求并等待其响应。
+                # 这样可以在等待响应期间让事件循环去处理其他任务，提高程序的并发性能和响应速度。
                 collected_content = []
                 collected_tool_calls = []
                 current_tool_call = None
-                
+                # response 是一个异步生成器（async generator），其每次迭代会返回一个 chunk（通常是 OpenAI/DeepSeek 等 LLM SDK 中的 StreamChunk 或类似对象）。
+                # 在流式调用时，模型会边生成边返回内容，每次循环会处理当前已生成的部分（如 delta.content 或 delta.tool_calls），
+                # 直到模型全部生成完毕，async for 循环才会结束。也就是说，循环体会多次被执行，每次处理一小段新生成的数据。
                 async for chunk in response:
                     # 处理文本内容
                     if chunk.choices[0].delta.content:
+                        """
+                        触发条件：模型正在生成普通文本回复
+                        处理逻辑：
+                        1. 提取文本片段
+                        2. 添加到收集器（用于最终拼接）
+                        3. 立即显示（实现实时效果）
+                        """
                         chunk_content = chunk.choices[0].delta.content
                         collected_content.append(chunk_content)
                         print(chunk_content, end="", flush=True)
                     
                     # 处理工具调用
                     if chunk.choices[0].delta.tool_calls:
+                        """
+                        触发条件：模型需要调用工具（Function Calling）
+                        处理逻辑：需要处理多层嵌套的复杂情况
+                        """
                         for tool_call in chunk.choices[0].delta.tool_calls:
                             if tool_call.index is not None:
+                                """
+                                tool_call.index 的作用：
+                                - 当模型需要调用多个工具时，用index区分(0,1,2...)
+                                - 同一个工具的信息可能分散在多个chunk中
+                                - 通过index判断是否开始了新的工具调用
+                                """
+                
                                 if current_tool_call is None or tool_call.index != current_tool_call["index"]:
+                                    """
+                                    触发条件：
+                                    1. current_tool_call is None: 第一次遇到工具调用
+                                    2. tool_call.index != current_tool_call["index"]: 遇到了新的工具(index变了)
+                    
+                                    处理逻辑：保存前一个完整工具，开始组装新工具
+                                    """
                                     if current_tool_call:
+                                        # 保存已完整的工具调用
                                         collected_tool_calls.append(current_tool_call)
                                     current_tool_call = {
+                                        # “or” 在这里的作用是：如果 tool_call.id 为 None 或空值，则使用空字符串 "" 作为默认值，避免出现 None。
+                                        # 这样可以保证 "id" 字段始终有值，便于后续处理。
                                         "id": tool_call.id or "",
                                         "type": "function",
                                         "index": tool_call.index,
                                         "function": {
-                                            "name": "",
-                                            "arguments": ""
+                                            "name": "",      # 将在后续chunk中填充
+                                            "arguments": ""  # 将逐步拼接
                                         }
                                     }
                             
                             if tool_call.function and tool_call.function.name:
                                 current_tool_call["function"]["name"] = tool_call.function.name
-                            
+                                """
+                                通常函数名在第一个相关chunk中完整给出
+                                直接覆盖赋值（不是拼接）
+                                """
                             if tool_call.function and tool_call.function.arguments:
                                 current_tool_call["function"]["arguments"] += tool_call.function.arguments
-                
-                # 添加最后一个工具调用
+                                """
+                                函数参数(JSON字符串)可能分多个chunk传输
+                                例如：
+                                chunk1: '{"location":'
+                                chunk2: '"北京"}'
+                                需要逐步拼接成完整JSON
+                                """
+                                """
+                                这里处理工具调用的具体逻辑如下：
+                                在流式响应的每个 chunk 中，模型可能会返回 tool_calls（即工具调用的增量信息）。
+                                1. 遍历 chunk.choices[0].delta.tool_calls（可能有多个工具调用）。
+                                2. 如果 tool_call.index 发生变化，说明是一个新的工具调用，先把上一个 current_tool_call 存入 collected_tool_calls，然后新建 current_tool_call。
+                                3. 对于每个 tool_call，提取其 id、type、index，并初始化 function 字段（包含 name 和 arguments）。
+                                4. 如果 tool_call.function.name 存在，则更新 current_tool_call["function"]["name"]。
+                                5. 如果 tool_call.function.arguments 存在，则将其追加到 current_tool_call["function"]["arguments"]（因为 arguments 可能是分多次增量返回的）。
+                                这样可以完整地收集和拼接每个工具调用的所有参数，最终在循环结束后，将最后一个工具调用加入 collected_tool_calls。
+                                添加最后一个工具调用                                          
+                                """
+
                 if current_tool_call:
                     collected_tool_calls.append(current_tool_call)
-                
+                # 拼接完成后的 current_tool_call 示例：
+                # {
+                #     "id": "tool_calls_1",
+                #     "type": "function",
+                #     "index": 1,
+                #     "function": {
+                #         "name": "get_weather",
+                #         "arguments": "{\"city\": \"北京\", \"date\": \"2024-06-01\"}"
+                #     }
+                # }
+                # 其中 "arguments" 字段为多次增量拼接后的完整参数字符串。
                 # 构建响应消息
                 final_content = "".join(collected_content).strip() if collected_content else None
-                
+                # 这段代码只是把流式响应过程中收集到的所有文本内容片段（collected_content）拼接成一个完整的字符串，得到最终的文本回复内容 final_content。
+                # 它不包含工具调用的内容，只负责整理和输出文本部分。如果没有收集到任何内容，则 final_content 为 None。
+                """
+                判断逻辑：
+                - collected_content有内容：拼接所有片段并去除首尾空格
+                - collected_content为空：设为None
+                """
                 # 如果使用历史记录，添加到对话历史
                 if use_history:
                     if final_content:
@@ -362,7 +431,9 @@ class LLM:
             print(f"[用户]: {user_input}\n")
             print("[助手]: ", end="")
             
-            # 第一次流式调用
+            # 这里的 first_response 指的是通过流式（stream=True）方式请求大模型后，收到的完整回复对象。
+            # 在流式过程中，模型会分多次（chunk）返回内容，最终 first_response 汇总了所有chunk的数据。
+            # 判断 first_response.tool_calls 是否有值，就是在判断这些chunk的集合中是否包含了工具调用（tool_calls）。
             first_response = await self.chat(
                 tools=tools,
                 stream=True,
