@@ -146,7 +146,7 @@ class LLM:
                     if response.choices[0].message.tool_calls:
                         self.conversation_history.append({
                             "role": "assistant",
-                            "content": None,
+                            "content": None, # 降噪，更稳的因果链：把“意图”与“最终答复”严格拆分
                             # tc 是工具调用对象（如 OpenAI 的 ToolCall 对象），它有 model_dump() 方法用于将对象序列化为字典。
                             # 这里遍历 response.choices[0].message.tool_calls，每个 tc 都调用 model_dump()，得到标准字典结构。
                             
@@ -326,7 +326,7 @@ class LLM:
                     if collected_tool_calls:
                         self.conversation_history.append({
                             "role": "assistant",
-                            "content": None,
+                            "content": None, 
                             "tool_calls": collected_tool_calls
                         })
                 
@@ -395,7 +395,17 @@ class LLM:
                     print(f"    参数: {func_args}")
                     
                     if func_name in tool_functions:
+                        """
+                        工具映射
+                        self.tool_functions = {
+                        "tavily_search": tavily_search
+                        }
+                        
+                        
+                        """
                         # 执行工具函数
+                        # iscoroutinefunction 是 Python 标准库 asyncio 中的一个函数，用于判断某个函数是否为协程函数（即 async def 定义的函数）。
+                        # 如果是协程函数，需要用 await 调用；否则直接普通调用。
                         if asyncio.iscoroutinefunction(tool_functions[func_name]):
                             result = await tool_functions[func_name](**func_args)
                         else:
