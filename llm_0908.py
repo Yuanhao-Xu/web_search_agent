@@ -18,7 +18,7 @@ class LLM:
        base_url (str): API基础URL
        model (str, optional): 模型名称，默认"deepseek-chat"
        tool_choice (str, optional): 工具选择模式，包括"auto", "required", "none"，默认"auto"
-       temperature (float, optional): 温度，控制生成结果的随机性，默认0.7
+       temperature (float, optional): 温度，控制生成结果的随机性，默认1
        max_tokens (int, optional): 最大tokens，默认4096
        stream (bool, optional): 是否流式输出，默认False
    """
@@ -28,7 +28,7 @@ class LLM:
                 base_url: str,
                 model: str = "deepseek-chat",
                 tool_choice: Literal["auto", "required", "none"] = "auto",
-                temperature: float = 0.7,
+                temperature: float = 1,
                 max_tokens: int = 4096,
                 stream: bool = False):
 
@@ -84,17 +84,16 @@ class LLM:
            ChatCompletionMessage: OpenAI格式的回复
        """
        try:
-           # 三种情况 1. 没有提供消息且未启用历史记录 2. 提供了消息 3. 提供了消息且启用历史记录
-           # 这里判断 messages 是否为 None 且 use_history 为 True，是为了决定本次请求要用什么消息内容：
-           # - 如果 messages 为空且 use_history=True，说明用户希望直接用历史对话作为上下文（多轮对话场景）。
-           # - 如果 messages 不为空，则优先使用传入的 messages（如临时自定义上下文）。
-           # - 否则两者都不满足，既没有传入消息，也不打算用历史，无法生成有效请求，抛出异常。
-           if messages is None and use_history:
-               messages_to_use = self.conversation_history
-           elif messages is not None:
+           # 简化逻辑：优先使用传入的消息，否则使用历史记录
+           if messages is not None:
                messages_to_use = messages
+               # 如果使用历史记录，将传入的消息添加到历史中
+               if use_history:
+                   for msg in messages:
+                       self.conversation_history.append(msg)
+           elif use_history:
+               messages_to_use = self.conversation_history
            else:
-               # raise 是 Python 用于主动抛出异常的关键字。当检测到错误或不符合预期的情况时，可以用 raise 抛出异常（如 ValueError），中断流程并交由上层处理。
                raise ValueError("没有提供消息且未启用历史记录")
            
            # 构建请求参数
@@ -117,22 +116,23 @@ class LLM:
            # **request_params 是 Python 的"字典解包"语法，可以把一个字典的每个键值对都当作独立的参数传递给函数。
            response = await self.client.chat.completions.create(**request_params)
            
-           # 如果使用历史记录，添加到对话历史
+           # 如果使用历史记录，将回复添加到对话历史
            if use_history:
-               # response.choices[0].message 代表本次回复的消息对象
-               # 其中 message.content 是助手回复的文本内容
-               # message.tool_calls 是工具调用的列表（如有 function call，则为列表，否则为 None）
-               if response.choices[0].message.content:
+               message = response.choices[0].message
+               
+               # 添加文本内容（如果有）
+               if message.content:
                    self.conversation_history.append({
                        "role": "assistant",
-                       "content": response.choices[0].message.content
+                       "content": message.content
                    })
-               if response.choices[0].message.tool_calls:
+               
+               # 添加工具调用（如果有）
+               if message.tool_calls:
                    self.conversation_history.append({
                        "role": "assistant",
-                       "content": None,  # 降噪，更稳的因果链：把"意图"与"最终答复"严格拆分
-                       # tc 是工具调用对象，它有 model_dump() 方法用于将对象序列化为字典
-                       "tool_calls": [tc.model_dump() for tc in response.choices[0].message.tool_calls]
+                       "content": None,  # 工具调用时content为None，避免重复 # 降噪，更稳的因果链：把"意图"与"最终答复"严格拆分
+                       "tool_calls": [tc.model_dump() for tc in message.tool_calls]
                    })
            
            # choices 是一个列表，通常情况下只包含一个对象（即 choices[0]），因为默认情况下模型只生成一个回复（n=1）。
@@ -158,10 +158,13 @@ class LLM:
                - {"type": "done", "data": dict} - 流式结束，包含完整内容
        """
        
-       if messages is None and use_history:
-           messages_to_use = self.conversation_history
-       elif messages is not None:
+       if messages is not None:
            messages_to_use = messages
+           if use_history:
+               for msg in messages:
+                   self.conversation_history.append(msg)
+       elif use_history:
+           messages_to_use = self.conversation_history
        else:
            raise ValueError("没有提供消息且未启用历史记录")
        

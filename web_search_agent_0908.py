@@ -131,25 +131,31 @@ class WebSearchAgent:
            async for chunk in self._chat_with_tools_stream(force_tool=False):
                yield chunk
    
+   def _transform_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
+       """转换LLM的chunk格式为WebSearchAgent格式"""
+       if chunk["type"] == "content":
+           return {
+               "type": "assistant_content",
+               "data": chunk["data"]
+           }
+       elif chunk["type"] == "done":
+           return {
+               "type": "complete",
+               "data": {
+                   "final_content": chunk["data"]["content"],
+                   "tool_calls": 0
+               }
+           }
+       else:
+           return chunk
+
    async def _chat_without_tools_stream(self) -> AsyncGenerator[Dict[str, Any], None]:
-       """不使用工具的流式对话"""
+       """不使用工具的流式对话 - 优化版本"""
        async for chunk in self.llm.chat_stream():
-           if chunk["type"] == "content":
-               yield {
-                   "type": "assistant_content",
-                   "data": chunk["data"]
-               }
-           elif chunk["type"] == "done":
-               yield {
-                   "type": "complete",
-                   "data": {
-                       "final_content": chunk["data"]["content"],
-                       "tool_calls": 0
-                   }
-               }
+           yield self._transform_chunk(chunk)
    
    async def _chat_with_tools_stream(self, force_tool: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
-       """使用工具的流式对话"""
+       """使用工具的流式对话 - 优化版本，复用LLM的工具调用功能"""
        
        # 特殊情况处理：工具调用次数为0
        if self.max_tool_calls == 0:
@@ -159,159 +165,85 @@ class WebSearchAgent:
            }
            
            async for chunk in self.llm.chat_stream(tools=None):
-               if chunk["type"] == "content":
-                   yield {
-                       "type": "assistant_content",
-                       "data": chunk["data"]
-                   }
-               elif chunk["type"] == "done":
-                   yield {
-                       "type": "complete",
-                       "data": {
-                           "final_content": chunk["data"]["content"],
-                           "tool_calls": 0
-                       }
-                   }
+               yield self._transform_chunk(chunk)
            return
        
-       # 正常工具调用流程
-       while self.tool_call_count < self.max_tool_calls:
-           # 设置工具选择模式
-           if force_tool:
-               tool_choice = "required"  # ALWAYS 模式下始终强制使用工具
-           else:
-               tool_choice = "auto"      # AUTO 模式下让模型决定
+       # 设置工具选择模式
+       tool_choice = "required" if force_tool else "auto"
+       
+       # 使用LLM的工具调用功能，但添加工具调用次数限制
+       async for chunk in self.llm.chat_with_tools_stream(
+           user_input="",  # 空输入，因为消息已经在历史中
+           tools=tools,
+           tool_functions=self.tool_functions,
+           temperature=None,
+           max_tokens=None
+       ):
+           # 转换chunk格式
+           transformed_chunk = self._transform_llm_chunk(chunk)
            
-           # 收集工具调用
-           tool_calls_to_execute = []
-           has_content = False
-           
-           # 调用模型
-           async for chunk in self.llm.chat_stream(tools=tools, tool_choice=tool_choice):
-               if chunk["type"] == "content":
-                   has_content = True
+           # 检查工具调用次数限制
+           if transformed_chunk["type"] == "tool_executing":
+               self.tool_call_count += 1
+               if self.tool_call_count >= self.max_tool_calls:
                    yield {
-                       "type": "assistant_content",
-                       "data": chunk["data"]
+                       "type": "tool_limit_reached",
+                       "data": f"已达到最大工具调用次数({self.max_tool_calls}次)"
                    }
-               elif chunk["type"] == "tool_call_complete":
-                   tool_calls_to_execute.append(chunk["data"])
-               elif chunk["type"] == "done":
-                   # 一轮对话完成
-                   if not tool_calls_to_execute:
-                       # 没有工具调用，对话结束
-                       yield {
-                           "type": "complete",
-                           "data": {
-                               "final_content": chunk["data"]["content"],
-                               "tool_calls": self.tool_call_count
-                           }
-                       }
-                       return
-                   
-                   # 执行工具调用
-                   yield {
-                       "type": "tool_execution_start",
-                       "data": f"执行搜索 (第{self.tool_call_count + 1}次)"
-                   }
-                   
-                   for tool_call in tool_calls_to_execute:
-                       func_name = tool_call["function"]["name"]
-                       
-                       # 安全解析JSON参数
-                       try:
-                           func_args = json.loads(tool_call["function"]["arguments"] or "{}")
-                       except Exception as e:
-                           error_msg = f"工具参数解析失败: {e}"
-                           yield {
-                               "type": "tool_error",
-                               "data": error_msg
-                           }
-                           self.llm.add_message("tool", error_msg, tool_call_id=tool_call["id"])
-                           continue
-                       
-                       if func_name in self.tool_functions:
-                           # 执行工具
-                           try:
-                               yield {
-                                   "type": "tool_executing",
-                                   "data": {
-                                       "name": func_name,
-                                       "query": func_args.get('query', 'N/A')
-                                   }
-                               }
-                               
-                               if asyncio.iscoroutinefunction(self.tool_functions[func_name]):
-                                   result = await self.tool_functions[func_name](**func_args)
-                               else:
-                                   result = self.tool_functions[func_name](**func_args)
-                               
-                               # 添加工具结果到历史
-                               self.llm.add_message("tool", str(result), tool_call_id=tool_call["id"])
-                               
-                               yield {
-                                   "type": "tool_result",
-                                   "data": {
-                                       "name": func_name,
-                                       "result_preview": str(result)[:200] + "..." if len(str(result)) > 200 else str(result)
-                                   }
-                               }
-                               
-                               self.tool_call_count += 1
-                               
-                           except Exception as e:
-                               error_msg = f"工具执行失败: {e}"
-                               yield {
-                                   "type": "tool_error",
-                                   "data": error_msg
-                               }
-                               self.llm.add_message("tool", error_msg, tool_call_id=tool_call["id"])
-                       else:
-                           error_msg = f"未知工具: {func_name}"
-                           yield {
-                               "type": "tool_error",
-                               "data": error_msg
-                           }
-                           self.llm.add_message("tool", error_msg, tool_call_id=tool_call["id"])
-                   
-                   # 检查是否达到上限
-                   if self.tool_call_count >= self.max_tool_calls:
-                       yield {
-                           "type": "tool_limit_reached",
-                           "data": f"已达到最大工具调用次数({self.max_tool_calls}次)"
-                       }
-                       
-                       # 添加系统提示
-                       self.llm.add_message(
-                           "tool",
-                           f"[系统提示] 已达到工具调用上限({self.max_tool_calls}次)，请基于现有信息生成回答。",
-                           tool_call_id="system_limit"
-                       )
-                       
-                       # 基于现有信息生成最终回答
-                       yield {
-                           "type": "final_answer_start",
-                           "data": "基于搜索结果生成回答..."
-                       }
-                       
-                       async for final_chunk in self.llm.chat_stream(tools=None):
-                           if final_chunk["type"] == "content":
-                               yield {
-                                   "type": "assistant_content",
-                                   "data": final_chunk["data"]
-                               }
-                           elif final_chunk["type"] == "done":
-                               yield {
-                                   "type": "complete",
-                                   "data": {
-                                       "final_content": final_chunk["data"]["content"],
-                                       "tool_calls": self.tool_call_count
-                                   }
-                               }
-                       return
-                   
-                   # 继续下一轮（如果还没达到上限）
+                   # 添加系统提示
+                   self.llm.add_message(
+                       "tool",
+                       f"[系统提示] 已达到工具调用上限({self.max_tool_calls}次)，请基于现有信息生成回答。",
+                       tool_call_id="system_limit"
+                   )
                    break
+           
+           yield transformed_chunk
+   
+   def _transform_llm_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
+       """转换LLM工具调用的chunk格式为WebSearchAgent格式"""
+       chunk_type = chunk["type"]
+       
+       if chunk_type == "content":
+           return {
+               "type": "assistant_content",
+               "data": chunk["data"]
+           }
+       elif chunk_type == "tool_execution_start":
+           return {
+               "type": "tool_execution_start",
+               "data": f"执行搜索 (第{self.tool_call_count + 1}次)"
+           }
+       elif chunk_type == "tool_executing":
+           return {
+               "type": "tool_executing",
+               "data": chunk["data"]
+           }
+       elif chunk_type == "tool_result":
+           return {
+               "type": "tool_result",
+               "data": chunk["data"]
+           }
+       elif chunk_type == "tool_error":
+           return {
+               "type": "tool_error",
+               "data": chunk["data"]
+           }
+       elif chunk_type == "final_answer_start":
+           return {
+               "type": "final_answer_start",
+               "data": chunk["data"]
+           }
+       elif chunk_type == "done":
+           return {
+               "type": "complete",
+               "data": {
+                   "final_content": chunk["data"]["content"],
+                   "tool_calls": self.tool_call_count
+               }
+           }
+       else:
+           return chunk
    
    async def process_message(self, user_input: str) -> str:
        """处理单条用户消息（非流式，保持向后兼容）
