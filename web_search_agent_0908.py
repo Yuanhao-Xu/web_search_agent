@@ -3,22 +3,9 @@
 import asyncio
 import json
 from typing import Optional, Dict, List, Literal, Any, AsyncGenerator
-from enum import Enum
 from llm_0908 import LLM
 from tools.tavily_search import tavily_search
 from tools.function_schema import tools
-
-class ToolMode(Enum):
-   """工具调用模式"""
-   NEVER = "never"          # 从不调用
-   AUTO = "auto"            # 自动决定
-   ALWAYS = "always"        # 始终调用
-
-# 该枚举类ToolMode用于定义Web搜索Agent的工具调用模式：
-# NEVER  表示从不调用工具，始终只用大模型对话；
-# AUTO   表示由大模型自动决定是否需要调用工具（如遇到需要实时信息时）；
-# ALWAYS 表示每次对话都强制调用工具（如搜索）并基于工具结果作答。
-# 这样可以灵活控制Agent是否以及何时调用外部工具（如搜索API），以适应不同的业务场景和需求。
 
 class WebSearchAgent:
    """Web搜索Agent会话管理类"""
@@ -27,7 +14,7 @@ class WebSearchAgent:
                 api_key: str,
                 base_url: str = "https://api.deepseek.com/v1",
                 model: str = "deepseek-chat",
-                tool_mode: ToolMode = ToolMode.AUTO,
+                tool_choice: Literal["auto", "required", "none"] = "auto",
                 max_tool_calls: int = 3,
                 temperature: float = 0.7,
                 max_tokens: int = 4096,
@@ -37,7 +24,7 @@ class WebSearchAgent:
            api_key: DeepSeek API密钥
            base_url: API基础URL
            model: 模型名称
-           tool_mode: 工具调用模式
+           tool_choice: 工具选择模式 ("auto", "required", "none")
            max_tool_calls: 单次对话最大工具调用次数
            temperature: 温度参数
            max_tokens: 最大tokens
@@ -50,12 +37,13 @@ class WebSearchAgent:
            api_key=api_key,
            base_url=base_url,
            model=model,
+           tool_choice=tool_choice,
            temperature=temperature,
            max_tokens=max_tokens,
            stream=stream
        )
        
-       self.tool_mode = tool_mode
+       self.tool_choice = tool_choice
        self.max_tool_calls = max_tool_calls
        self.tool_call_count = 0  # 当前对话工具调用计数
        
@@ -69,27 +57,36 @@ class WebSearchAgent:
        # 如果设置为False，则会话终止，Agent不再响应新的消息（如用户输入/exit命令时）。
        self.session_active = True 
        self.system_prompt = """你是一个智能助手，可以通过搜索工具获取最新的互联网信息。
-当用户询问需要实时信息的问题时，你会使用搜索工具。
-请基于搜索结果提供准确、有帮助的回答。"""
+
+搜索策略指导：
+1. 当用户询问需要实时信息的问题时，使用搜索工具
+2. 如果首次搜索结果不够充分或相关，可以进行多轮搜索：
+   - 尝试不同的搜索关键词
+   - 使用更具体或更宽泛的搜索词
+   - 基于前次搜索结果调整搜索策略
+3. 最多可以进行3次搜索，请合理利用搜索次数
+4. 基于所有搜索结果提供准确、全面、有帮助的回答
+
+搜索质量评估：
+- 如果搜索结果与用户问题高度相关且信息充分，可以停止搜索
+- 如果搜索结果不够相关或信息不足，继续优化搜索策略"""
        
-       # 初始化时注入系统提示
-       if not self.llm.conversation_history:
-           self.llm.add_message("system", self.system_prompt)
+       # 初始化时注入系统提示（到conversation_history）
+       self.llm.add_message("system", self.system_prompt)
    
    def reset_session(self):
        """重置会话状态"""
        self.llm.clear_history()
        self.tool_call_count = 0
-       # 重新注入系统提示
+       # 重新注入系统提示（到conversation_history）
        self.llm.add_message("system", self.system_prompt)
        print("✨ 会话已重置\n")
    
-   def set_tool_mode(self, mode: ToolMode):
-       """设置工具调用模式"""
-       self.tool_mode = mode
-       print(f"🔧 工具模式设置为: {mode.value}\n")
-   # 在process_message_stream方法中，会根据self.tool_mode的值决定是否调用工具（如tavily_search）。
-   # 通过set_tool_mode方法可以动态修改self.tool_mode，从而真正改变了工具调用模式。
+   def set_tool_choice(self, choice: Literal["auto", "required", "none"]):
+       """设置工具选择模式"""
+       self.tool_choice = choice
+       self.llm.tool_choice = choice
+       print(f"🔧 工具选择模式设置为: {choice}\n")
    
    def set_max_tool_calls(self, max_calls: int):
        """设置最大工具调用次数"""
@@ -103,351 +100,47 @@ class WebSearchAgent:
        print(f"📡 输出模式设置为: {mode_str}\n")
    
    async def process_message_stream(self, user_input: str) -> AsyncGenerator[Dict[str, Any], None]:
-       """流式处理单条用户消息 - 返回异步生成器供SSE使用
-       
-       Args:
-           user_input: 用户输入
-           
-       Yields:
-           Dict: 包含type和data的事件字典
-       """
-       # 重置单次对话的工具调用计数
+       """流式处理单条用户消息（简化版，完全复用LLM类逻辑）"""
        self.tool_call_count = 0
        
-       # 添加用户消息
-       self.llm.add_message("user", user_input)
-       
-       # 根据工具模式决定是否使用工具
-       if self.tool_mode == ToolMode.NEVER:
-           # 不使用工具，直接对话
-           async for chunk in self._chat_without_tools_stream():
+       try:
+           async for chunk in self.llm.chat_with_tools_stream(
+               user_input=user_input,
+               tools=None if self.tool_choice == "none" else tools,
+               tool_functions=self.tool_functions
+           ):
+               # 仅处理工具调用次数限制
+               if chunk["type"] == "tool_executing":
+                   self.tool_call_count += 1
+                   if self.tool_call_count > self.max_tool_calls:
+                       self.llm.add_message(
+                           "tool", 
+                           f"[已达到{self.max_tool_calls}次调用上限]",
+                           tool_call_id="limit"
+                       )
+                       yield {"type": "tool_limit", "data": f"达到上限{self.max_tool_calls}次"}
+                       break
+               
+               # 透传所有其他事件
                yield chunk
-       elif self.tool_mode == ToolMode.ALWAYS:
-           # 始终使用工具
-           async for chunk in self._chat_with_tools_stream(force_tool=True):
-               yield chunk
-       else:  # AUTO模式
-           # 让模型决定是否使用工具
-           async for chunk in self._chat_with_tools_stream(force_tool=False):
-               yield chunk
+               
+       except Exception as e:
+           yield {"type": "error", "data": f"处理消息时出错: {str(e)}"}
    
-   def _transform_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
-       """转换LLM的chunk格式为WebSearchAgent格式"""
-       if chunk["type"] == "content":
-           return {
-               "type": "assistant_content",
-               "data": chunk["data"]
-           }
-       elif chunk["type"] == "done":
-           return {
-               "type": "complete",
-               "data": {
-                   "final_content": chunk["data"]["content"],
-                   "tool_calls": 0
-               }
-           }
-       else:
-           return chunk
-
-   async def _chat_without_tools_stream(self) -> AsyncGenerator[Dict[str, Any], None]:
-       """不使用工具的流式对话 - 优化版本"""
-       async for chunk in self.llm.chat_stream():
-           yield self._transform_chunk(chunk)
-   
-   async def _chat_with_tools_stream(self, force_tool: bool = False) -> AsyncGenerator[Dict[str, Any], None]:
-       """使用工具的流式对话 - 优化版本，复用LLM的工具调用功能"""
-       
-       # 特殊情况处理：工具调用次数为0
-       if self.max_tool_calls == 0:
-           yield {
-               "type": "system_message",
-               "data": "工具调用次数为0，直接生成回答..."
-           }
-           
-           async for chunk in self.llm.chat_stream(tools=None):
-               yield self._transform_chunk(chunk)
-           return
-       
-       # 设置工具选择模式
-       tool_choice = "required" if force_tool else "auto"
-       
-       # 使用LLM的工具调用功能，但添加工具调用次数限制
-       async for chunk in self.llm.chat_with_tools_stream(
-           user_input="",  # 空输入，因为消息已经在历史中
-           tools=tools,
-           tool_functions=self.tool_functions,
-           temperature=None,
-           max_tokens=None
-       ):
-           # 转换chunk格式
-           transformed_chunk = self._transform_llm_chunk(chunk)
-           
-           # 检查工具调用次数限制
-           if transformed_chunk["type"] == "tool_executing":
-               self.tool_call_count += 1
-               if self.tool_call_count >= self.max_tool_calls:
-                   yield {
-                       "type": "tool_limit_reached",
-                       "data": f"已达到最大工具调用次数({self.max_tool_calls}次)"
-                   }
-                   # 添加系统提示
-                   self.llm.add_message(
-                       "tool",
-                       f"[系统提示] 已达到工具调用上限({self.max_tool_calls}次)，请基于现有信息生成回答。",
-                       tool_call_id="system_limit"
-                   )
-                   break
-           
-           yield transformed_chunk
-   
-   def _transform_llm_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
-       """转换LLM工具调用的chunk格式为WebSearchAgent格式"""
-       chunk_type = chunk["type"]
-       
-       if chunk_type == "content":
-           return {
-               "type": "assistant_content",
-               "data": chunk["data"]
-           }
-       elif chunk_type == "tool_execution_start":
-           return {
-               "type": "tool_execution_start",
-               "data": f"执行搜索 (第{self.tool_call_count + 1}次)"
-           }
-       elif chunk_type == "tool_executing":
-           return {
-               "type": "tool_executing",
-               "data": chunk["data"]
-           }
-       elif chunk_type == "tool_result":
-           return {
-               "type": "tool_result",
-               "data": chunk["data"]
-           }
-       elif chunk_type == "tool_error":
-           return {
-               "type": "tool_error",
-               "data": chunk["data"]
-           }
-       elif chunk_type == "final_answer_start":
-           return {
-               "type": "final_answer_start",
-               "data": chunk["data"]
-           }
-       elif chunk_type == "done":
-           return {
-               "type": "complete",
-               "data": {
-                   "final_content": chunk["data"]["content"],
-                   "tool_calls": self.tool_call_count
-               }
-           }
-       else:
-           return chunk
    
    async def process_message(self, user_input: str) -> str:
-       """处理单条用户消息（非流式，保持向后兼容）
+       """非流式处理单条用户消息"""
+       tools_to_use = None if self.tool_choice == "none" else tools
        
-       Args:
-           user_input: 用户输入
-           
-       Returns:
-           str: Agent响应
-       """
-       # 收集流式输出的完整内容
-       full_content = []
-       
-       async for chunk in self.process_message_stream(user_input):
-           if chunk["type"] == "assistant_content":
-               full_content.append(chunk["data"])
-               print(chunk["data"], end="", flush=True)
-           elif chunk["type"] == "tool_executing":
-               print(f"\n[执行搜索]: {chunk['data']['query']}")
-           elif chunk["type"] == "tool_result":
-               print(f"[搜索结果]: {chunk['data']['result_preview'][:100]}...")
-           elif chunk["type"] == "final_answer_start":
-               print(f"\n[{chunk['data']}]\n", end="")
-           elif chunk["type"] == "complete":
-               print()  # 换行
-               return chunk["data"]["final_content"] or "".join(full_content)
-       
-       return "".join(full_content)
-   
-   async def run_interactive(self):
-       """运行交互式会话"""
-       print("="*60)
-       print("🤖 Web搜索Agent - 交互式会话")
-       print("="*60)
-       print("命令说明:")
-       print("  /reset    - 清空对话历史")
-       print("  /mode     - 切换工具调用模式")
-       print("  /stream   - 切换流式/非流式输出")
-       print("  /max N    - 设置最大工具调用次数(N为数字)")
-       print("  /history  - 查看对话历史")
-       print("  /exit     - 退出会话")
-       print(f"\n当前设置: 工具模式={self.tool_mode.value}, 流式={self.llm.stream}, 最大调用={self.max_tool_calls}次")
-       print("="*60 + "\n")
-       
-       while self.session_active:
-           try:
-               # 获取用户输入
-               user_input = input("\n[用户]: ").strip()
-               
-               if not user_input:
-                   continue
-               
-               # 处理命令
-               if user_input.startswith("/"):
-                   await self._handle_command(user_input)
-                   continue
-               
-               # 处理普通消息
-               print()
-               if self.llm.stream:
-                   # 流式输出
-                   print("[助手]: ", end="")
-                   async for chunk in self.process_message_stream(user_input):
-                       if chunk["type"] == "assistant_content":
-                           print(chunk["data"], end="", flush=True)
-                       elif chunk["type"] == "tool_executing":
-                           print(f"\n[执行搜索]: {chunk['data']['query']}")
-                       elif chunk["type"] == "final_answer_start":
-                           print(f"\n[基于搜索结果生成回答]: ", end="")
-                       elif chunk["type"] == "complete":
-                           print()  # 换行
-               else:
-                   # 非流式输出
-                   await self.process_message(user_input)
-               
-           except KeyboardInterrupt:
-               print("\n\n👋 会话已中断")
-               break
-           except Exception as e:
-               print(f"\n❌ 发生错误: {str(e)}")
-               continue
-   
-   async def _handle_command(self, command: str):
-       """处理命令"""
-       cmd_parts = command.split()
-       cmd = cmd_parts[0].lower()
-       
-       if cmd == "/exit":
-           print("👋 再见！")
-           self.session_active = False
-           
-       elif cmd == "/reset":
-           self.reset_session()
-           
-       elif cmd == "/mode":
-           print("\n选择工具调用模式:")
-           print("1. never  - 从不调用工具")
-           print("2. auto   - 自动决定(默认)")
-           print("3. always - 始终调用工具")
-           
-           choice = input("请选择(1/2/3): ").strip()
-           mode_map = {"1": ToolMode.NEVER, "2": ToolMode.AUTO, "3": ToolMode.ALWAYS}
-           
-           if choice in mode_map:
-               self.set_tool_mode(mode_map[choice])
-           else:
-               print("⚠️ 无效选择")
-               
-       elif cmd == "/stream":
-           current = self.llm.stream
-           self.set_stream_mode(not current)
-           
-       elif cmd == "/max":
-           if len(cmd_parts) > 1 and cmd_parts[1].isdigit():
-               self.set_max_tool_calls(int(cmd_parts[1]))
-           else:
-               print("⚠️ 请提供有效数字，如: /max 5")
-               
-       elif cmd == "/history":
-           print("\n📜 对话历史:")
-           for i, msg in enumerate(self.llm.get_history(), 1):
-               role = msg["role"]
-               content = msg.get("content", "")
-               
-               if role == "tool":
-                   # 工具结果简化显示
-                   print(f"{i}. [{role}]: <搜索结果...>")
-               elif content:
-                   # 普通消息截断显示
-                   display = content[:100] + "..." if len(content) > 100 else content
-                   print(f"{i}. [{role}]: {display}")
-               elif msg.get("tool_calls"):
-                   print(f"{i}. [{role}]: <调用工具>")
-       else:
-           print(f"⚠️ 未知命令: {cmd}")
-
-# ============================================
-# FastAPI适配接口
-# ============================================
-
-class SessionManager:
-   """会话管理器 - 用于FastAPI集成"""
-   
-   def __init__(self):
-       self.sessions: Dict[str, WebSearchAgent] = {}
-   
-   def create_session(self, 
-                      session_id: str,
-                      api_key: str,
-                      **kwargs) -> WebSearchAgent:
-       """创建新会话"""
-       # 转换工具模式字符串为枚举
-       if 'tool_mode' in kwargs and isinstance(kwargs['tool_mode'], str):
-           kwargs['tool_mode'] = ToolMode(kwargs['tool_mode'])
-           
-       session = WebSearchAgent(api_key=api_key, **kwargs)
-       self.sessions[session_id] = session
-       return session
-   
-   def get_session(self, session_id: str) -> Optional[WebSearchAgent]:
-       """获取会话"""
-       return self.sessions.get(session_id)
-   
-   def delete_session(self, session_id: str) -> bool:
-       """删除会话"""
-       if session_id in self.sessions:
-           del self.sessions[session_id]
-           return True
-       return False
-   
-   async def process_request_stream(self,
-                                   session_id: str,
-                                   message: str,
-                                   create_if_not_exists: bool = True,
-                                   api_key: Optional[str] = None,
-                                   **session_kwargs) -> AsyncGenerator[Dict[str, Any], None]:
-       """流式处理请求 - 返回异步生成器供SSE使用"""
-       
-       # 获取或创建会话
-       session = self.get_session(session_id)
-       if not session and create_if_not_exists:
-           if not api_key:
-               yield {
-                   "type": "error",
-                   "data": "需要提供api_key创建新会话"
-               }
-               return
-           session = self.create_session(session_id, api_key, **session_kwargs)
-       elif not session:
-           yield {
-               "type": "error",
-               "data": "会话不存在"
-           }
-           return
-       
-       # 流式处理消息
        try:
-           async for chunk in session.process_message_stream(message):
-               yield chunk
+           return await self.llm.chat_with_tools(
+               user_input=user_input,
+               tools=tools_to_use,
+               tool_functions=self.tool_functions,
+               stream=False
+           )
        except Exception as e:
-           yield {
-               "type": "error",
-               "data": str(e)
-           }
+           return f"处理消息时出错: {str(e)}"
 
 # ============================================
 # 测试入口
@@ -457,12 +150,15 @@ async def main():
    """测试入口"""
    agent = WebSearchAgent(
        api_key="sk-f5889d58c6db4dd38ca78389a6c7a7e8",  
-       tool_mode=ToolMode.AUTO,
+       tool_choice="auto",
        max_tool_calls=3,
        stream=True
    )
    
-   await agent.run_interactive()
+   # 简单测试
+   print("测试WebSearchAgent...")
+   result = await agent.process_message("今天北京的天气怎么样？")
+   print(f"结果: {result}")
 
 if __name__ == "__main__":
    asyncio.run(main())

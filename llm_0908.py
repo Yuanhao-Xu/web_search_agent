@@ -357,7 +357,7 @@ class LLM:
                # 第一轮完成
                if tool_calls_to_execute:
                    # 执行工具调用
-                   yield {"type": "tool_execution_start"}
+                   yield {"type": "tool_execution_start", "data": {}}
                    
                    for tool_call in tool_calls_to_execute:
                        func_name = tool_call["function"]["name"]
@@ -399,7 +399,7 @@ class LLM:
                            }
                    
                    # 基于工具结果生成最终回答
-                   yield {"type": "final_answer_start"}
+                   yield {"type": "final_answer_start", "data": {}}
                    
                    async for final_chunk in self.chat_stream(tools=tools, temperature=temperature, max_tokens=max_tokens):
                        if final_chunk["type"] == "content":
@@ -501,7 +501,7 @@ async def test_llm():
    
    # 初始化 - 支持DeepSeek
    llm = LLM(
-       api_key="sk-YOUR_API_KEY",
+       api_key="sk-f5889d58c6db4dd38ca78389a6c7a7e8",
        base_url="https://api.deepseek.com/v1",  # DeepSeek
        model="deepseek-chat",
        stream=False,  # 默认非流式
