@@ -1,8 +1,0 @@
-Requirement already satisfied: httpx in d:\anaconda3\lib\site-packages (0.28.1)
-Requirement already satisfied: anyio in d:\anaconda3\lib\site-packages (from httpx) (3.7.1)
-Requirement already satisfied: certifi in d:\anaconda3\lib\site-packages (from httpx) (2025.1.31)
-Requirement already satisfied: httpcore==1.* in d:\anaconda3\lib\site-packages (from httpx) (1.0.7)
-Requirement already satisfied: idna in d:\anaconda3\lib\site-packages (from httpx) (3.10)
-Requirement already satisfied: h11<0.15,>=0.13 in d:\anaconda3\lib\site-packages (from httpcore==1.*->httpx) (0.14.0)
-Requirement already satisfied: sniffio>=1.1 in d:\anaconda3\lib\site-packages (from anyio->httpx) (1.2.0)
-Requirement already satisfied: exceptiongroup in c:\users\84740\appdata\roaming\python\python310\site-packages (from anyio->httpx) (1.2.2)
