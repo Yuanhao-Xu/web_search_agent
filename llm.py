@@ -1,13 +1,13 @@
 # 0913 优化历史消息记录结构：规划角色和字段json
 # 0913 优化信息传入逻辑：有状态对话：记录状态→清空状态
 # 0913 去掉_prepare_messages和_build_request_params冗杂方法，使用add_message统一管理流式和非流式，在更高层统一管理系统提示词
+# 0913 优化递归逻辑，使用递归深度控制工具执行次数（流式/非流式）
 
 
 
 """
 通用LLM类 - 支持DeepSeek等OpenAI兼容API
 支持多轮对话、Function Calling、流式/非流式输出
-重构版本：减少代码重复，统一逻辑处理
 """
 
 from openai import AsyncOpenAI
@@ -98,7 +98,7 @@ class LLM:
         return self.conversation_history.copy()
 
     # ============================================
-    # 内部辅助方法 - 抽取公共逻辑
+    # 公共逻辑 - 1.请求参数构建 2.工具执行 
     # ============================================
       
     def _build_request_params(self,
@@ -126,7 +126,51 @@ class LLM:
     async def _execute_tool(self,
                           tool_call: Dict,
                           tool_functions: Dict[str, Callable]) -> tuple[str, str]:
-        """执行单个工具调用 - 统一工具执行逻辑"""
+        """执行单个工具调用 - 统一工具执行逻辑
+        
+        处理assistant角色返回的tool_call，执行对应的工具函数并返回结果。
+        
+        Args:
+            tool_call (Dict): 工具调用信息，格式如下：
+                {
+                    "function": {
+                        "name": str,        # 要调用的函数名称
+                        "arguments": str    # JSON格式的参数字符串
+                    }
+                }
+                
+                示例：
+                {
+                    "function": {
+                        "name": "search_web",
+                        "arguments": '{"query": "Python教程", "max_results": 5}'
+                    }
+                }
+            
+            tool_functions (Dict[str, Callable]): 可用的工具函数映射表
+                键为函数名称，值为对应的可调用函数对象。
+                
+                格式：
+                {
+                    "函数名称": 函数对象,
+                    ...
+                }
+                
+                示例：
+                {
+                    "search_web": search_web_func,
+                    "calculate": calculate_func
+                }
+        
+        Returns:
+            tuple[str, str]: 返回元组 (函数名称, 执行结果)
+                - 函数名称: 被执行的函数名
+                - 执行结果: 函数执行的结果字符串，或错误信息
+        
+        Note:
+            - 自动处理同步和异步函数的执行
+            - 如果函数不存在，返回错误信息而不抛出异常
+        """
         
         func_name = tool_call["function"]["name"]
         func_args = json.loads(tool_call["function"]["arguments"])
@@ -149,8 +193,8 @@ class LLM:
     
     async def chat_complete(self,
                         user_input: Optional[str] = None,
-                        tools: Optional[List[Dict]] = None,
-                        tool_functions: Optional[Dict[str, Callable]] = None,
+                        tools: Optional[List[Dict]] = None, # tool_schemas
+                        tool_functions: Optional[Dict[str, Callable]] = None, # 工具映射表
                         temperature: Optional[float] = None,
                         max_tokens: Optional[int] = None,
                         tool_choice: Optional[Literal["auto", "required", "none"]] = None,
@@ -215,6 +259,7 @@ class LLM:
         
         # 提取工具调用（如果有）
         tool_calls = None
+        # tools = [{工具1},{工具2（如有）},...]
         if message.tool_calls:
             tool_calls = [
                 {
@@ -248,7 +293,7 @@ class LLM:
         for tool_call in message.tool_calls:
             # 执行工具
             func_name, result = await self._execute_tool(
-                tool_call.model_dump(), 
+                tool_call.model_dump(), # Pydantic → 用于将模型实例转换为字典格式
                 tool_functions
             )
             
@@ -332,7 +377,7 @@ class LLM:
         content_chunks = []
         
         async for chunk in self._stream_core(
-            tools=tools,
+            tools=tools, # tool_schemas
             temperature=temperature,
             max_tokens=max_tokens,
             tool_choice=tool_choice
@@ -416,6 +461,7 @@ class LLM:
         collected_tool_calls = []
         current_tool_call = None
         
+        # 累计文本内容 + 累计工具参数
         async for chunk in response:
             delta = chunk.choices[0].delta
             
@@ -425,10 +471,14 @@ class LLM:
                 yield {"type": "content", "data": delta.content}
             
             # 处理工具调用
+            # 是否有工具调用
             if delta.tool_calls:
                 for tool_call in delta.tool_calls:
+                    # 检查index是否存在
                     if tool_call.index is not None:
+                        # 判断是否是新工具
                         if current_tool_call is None or tool_call.index != current_tool_call["index"]:
+                            # 是新工具，保存上一个工具
                             if current_tool_call:
                                 # 保存上一个工具调用（只保留标准字段）
                                 standard_call = {
