@@ -38,17 +38,18 @@ tools = [
                 "required": ["query"]
             }
         }
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "terminate",
-            "description": "当收集到足够信息可以回答用户问题时，调用此工具结束搜索",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
     }
+    # ,
+    # {
+    #     "type": "function",
+    #     "function": {
+    #         "name": "terminate",
+    #         "description": "当收集到足够信息可以回答用户问题时，调用此工具结束搜索",
+    #         "parameters": {
+    #             "type": "object",
+    #             "properties": {},
+    #             "required": []
+    #         }
+    #     }
+    # }
 ]

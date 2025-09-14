@@ -1,15 +1,3 @@
-# 0913 优化历史消息记录结构：规划角色和字段json
-# 0913 优化信息传入逻辑：有状态对话：记录状态→清空状态
-# 0913 去掉_prepare_messages和_build_request_params冗杂方法，使用add_message统一管理流式和非流式，在更高层统一管理系统提示词
-# 0913 优化递归逻辑，使用递归深度控制工具执行次数（流式/非流式）
-
-
-
-"""
-通用LLM类 - 支持DeepSeek等OpenAI兼容API
-支持多轮对话、Function Calling、流式/非流式输出
-"""
-
 from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessage
 from typing import List, Dict, Optional, Literal, Callable, AsyncGenerator, Any, Union
@@ -19,11 +7,12 @@ import json
 class LLM:
     """通用大模型类，支持OpenAI兼容的API（包括DeepSeek）
     
-    重构优化：
-    - 统一消息准备和参数构建逻辑
-    - 抽取工具执行公共代码
-    - 简化流式/非流式处理流程
-    """
+    优化：
+        1. 优化历史消息记录结构：规范角色和字段json
+        2. 优化信息传入逻辑：有状态对话：记录状态→清空状态
+        3. 去掉冗杂方法，使用add_message统一管理流式和非流式，在api层统一管理sys_prompt
+        4. 优化递归逻辑，使用递归深度控制工具执行次数（流式/非流式）
+    """ 
 
     def __init__(self,
                  api_key: str,
@@ -389,6 +378,7 @@ class LLM:
                 tool_calls_to_execute.append(chunk["data"])
             elif chunk["type"] == "done":
                 # 判断是否需要执行工具
+                # 每一次递归（self._stream_core）都会产生done事件，done后执行工具更新历史消息，继续递归
                 if tool_calls_to_execute and tool_functions:
                     # 执行工具调用
                     yield {"type": "tool_execution_start", "data": {"round": _current_round + 1}}
@@ -538,223 +528,7 @@ class LLM:
             }
         }
 
-
-# # ============================================
-# # 使用示例和测试
-# # ============================================
-
-"""
-LLM多轮对话测试脚本
-测试流式和非流式功能，并验证消息历史格式
-"""
-
-import asyncio
-import json
-
-async def test_multi_round_conversation():
-    """测试多轮对话并验证消息历史"""
-    
-    # 初始化LLM - 不再传system_prompt
-    llm = LLM(
-        api_key="sk-f5889d58c6db4dd38ca78389a6c7a7e8",
-        base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat",
-        temperature=0.7
-    )
-    
-    # 手动添加系统提示
-    llm.add_message("system", "你是一个简洁的AI助手，回答控制在50字以内")
-    
-    # 第一轮对话
-    response = await llm.chat_complete(
-        user_input="什么是Python？",
-        verbose=True
-    )
-    
-    # 第二轮：继续对话
-    response = await llm.chat_complete(
-        user_input="它的主要优点是什么？",
-        verbose=True
-    )
-    
-    # 打印对话历史
-    print("\n📝 当前对话历史：")
-    for i, msg in enumerate(llm.get_history(), 1):
-        print(f"{i}. [{msg['role']}]: {msg.get('content', 'None')[:50]}...")
-    
-    print("\n" + "="*60)
-    print("🔵 测试2: 流式多轮对话")
-    print("="*60)
-    
-    # 清空历史，开始新对话
-    llm.clear_history()
-    
-    # 第一轮流式对话
-    print("[用户]: 讲个10字的故事")
-    print("[助手]: ", end="")
-    async for chunk in llm.chat_stream(
-        user_input="讲个10字的故事"
-    ):
-        if chunk["type"] == "content":
-            print(chunk["data"], end="", flush=True)
-    print()
-    
-    # 第二轮流式对话
-    print("\n[用户]: 再讲一个")
-    print("[助手]: ", end="")
-    async for chunk in llm.chat_stream(
-        user_input="再讲一个"
-    ):
-        if chunk["type"] == "content":
-            print(chunk["data"], end="", flush=True)
-    print()
-    
-    # 打印流式对话历史
-    print("\n📝 流式对话历史：")
-    for i, msg in enumerate(llm.get_history(), 1):
-        print(f"{i}. [{msg['role']}]: {msg.get('content', 'None')[:50]}...")
-
-async def test_with_tools():
-    """测试带工具的对话"""
-    
-    llm = LLM(
-        api_key="sk-f5889d58c6db4dd38ca78389a6c7a7e8",
-        base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat",
-        temperature=0.7
-    )
-    
-    print("\n" + "="*60)
-    print("🔧 测试3: 带工具的多轮对话")
-    print("="*60)
-    
-    # 定义简单工具
-    def get_time():
-        """获取当前时间"""
-        from datetime import datetime
-        return datetime.now().strftime("%H:%M:%S")
-    
-    tools = [{
-        "type": "function",
-        "function": {
-            "name": "get_time",
-            "description": "获取当前时间",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-                "required": []
-            }
-        }
-    }]
-    
-    tool_functions = {"get_time": get_time}
-    
-    # 执行工具调用
-    response = await llm.chat_complete(
-        user_input="现在几点了？",
-        tools=tools,
-        tool_functions=tool_functions,
-        verbose=True
-    )
-    
-    # 继续对话（不使用工具）
-    await llm.chat_complete(
-        user_input="谢谢！",
-        verbose=True
-    )
-    
-    # 验证消息历史格式
-    print("\n📝 详细消息历史检查：")
-    for i, msg in enumerate(llm.get_history(), 1):
-        print(f"\n消息 {i}:")
-        print(f"  role: {msg['role']}")
-        print(f"  content: {msg.get('content', 'None')}")
-        if 'tool_calls' in msg:
-            print(f"  tool_calls: {json.dumps(msg['tool_calls'], indent=4)}")
-        if 'tool_call_id' in msg:
-            print(f"  tool_call_id: {msg['tool_call_id']}")
-
-async def validate_message_format():
-    """验证消息格式是否符合标准"""
-    
-    print("\n" + "="*60)
-    print("✅ 消息格式验证")
-    print("="*60)
-    
-    llm = LLM(
-        api_key="sk-f5889d58c6db4dd38ca78389a6c7a7e8",
-        base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat"
-    )
-    
-    # 测试各种消息类型
-    test_cases = [
-        ("system", "你是助手", None, None),
-        ("user", "你好", None, None),
-        ("assistant", "你好！", None, None),
-        ("assistant", None, [{"id": "call_123", "type": "function", 
-                              "function": {"name": "test", "arguments": "{}"}}], None),
-        ("tool", "结果", None, "call_123")
-    ]
-    
-    for role, content, tool_calls, tool_call_id in test_cases:
-        try:
-            llm.add_message(role, content, tool_calls, tool_call_id)
-            print(f"✓ {role}消息添加成功")
-        except Exception as e:
-            print(f"✗ {role}消息失败: {e}")
-    
-    # 显示最终历史
-    print("\n📋 标准格式消息历史：")
-    print(llm.get_history())
-
-async def main():
-    """主测试函数"""
-    print("\n" + "🚀 开始LLM多轮对话测试 🚀".center(60, "="))
-    
-    try:
-        # 运行测试
-        await test_multi_round_conversation()
-        await test_with_tools()
-        await validate_message_format()
-        
-        print("\n" + "✅ 所有测试完成！".center(60, "="))
-        
-    except Exception as e:
-        print(f"\n❌ 测试失败: {e}")
-        import traceback
-        traceback.print_exc()
-
-if __name__ == "__main__":
-    asyncio.run(main())
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+##############################################
 
 
 
@@ -762,6 +536,7 @@ if __name__ == "__main__":
 # ============================================
 # 标准的history_conversation结构
 # ============================================
+
 # # 1. System消息
 # {
 #     "role": "system",
@@ -802,3 +577,40 @@ if __name__ == "__main__":
 #     "content": "工具执行结果文本",  # 必需
 #     "tool_call_id": "对应的调用id"  # 必需，关联到assistant的tool_calls
 # }
+
+
+
+# ============================================
+# SSE 事件类型汇总
+# ============================================
+
+# 1. content - 文本内容片段
+# 含义：模型生成的文本内容，逐字/逐词流式输出
+# 触发时机：当模型生成普通文本回复时代码位置：
+# 2. tool_call_delta - 工具参数增量
+# 含义：工具调用参数的流式片段
+# 触发时机：当模型决定调用工具，并逐步生成参数时代码位置：
+# 3. tool_call_complete - 工具调用完成
+# 含义：一个完整的工具调用信息已经收集完毕
+# 触发时机：当一个工具的所有参数都接收完成时代码位置：
+# 4. done - 单轮完成信号
+# 含义：当前这一轮的流式输出已经完成
+# 触发时机：每次 API 调用的流式响应结束时代码位置：
+# 5. system_info - 系统信息
+# 含义：系统级别的提示信息
+# 触发时机：达到最大工具调用轮数时代码位置：
+# 6. tool_execution_start - 工具执行开始
+# 含义：开始执行工具调用
+# 触发时机：准备执行收集到的工具调用时代码位置：
+# 7. tool_executing - 正在执行工具
+# 含义：具体某个工具正在执行
+# 触发时机：在执行具体工具函数之前代码位置：
+# 8. tool_result - 工具执行结果
+# 含义：工具执行完成，返回结果
+# 触发时机：工具函数执行完毕后代码位置：
+# 9. continue_generation - 继续生成
+# 含义：工具执行完成，继续生成下一轮回复
+# 触发时机：完成工具调用后，准备递归调用生成最终答案代码位置：
+# 10. history - 完整对话历史（api层）
+# 含义：发送完整的对话历史记录
+# 触发时机：在所有流式内容发送完成后，作为最后一个事件发送

@@ -22,19 +22,22 @@ logger = logging.getLogger(__name__)
 # 数据模型定义
 # ============================================
 
+# 流式响应：返回 SSE 事件流
+# 非流式响应：返回 JSON 响应
+
 class ChatRequest(BaseModel):
-    """聊天请求模型 - 复用LLM类参数命名"""
+    """聊天请求模型"""
     user_id: str                          
     message: str                          
     stream: bool = False                  
     temperature: Optional[float] = None   
     max_tokens: Optional[int] = None     
-    max_tool_rounds: int = 3             # 复用LLM类中的参数名
+    max_tool_rounds: int = 3             # 工具调用次数
 
 class ChatResponse(BaseModel):
     """非流式响应模型"""
     user_id: str
-    content: str                          # 复用LLM中的content命名
+    content: str                          
     conversation_history: List[Dict]      # 完整消息历史
     status: str = "success"
 
@@ -68,7 +71,7 @@ def get_or_create_user_session(user_id: str) -> LLM:
             "system", 
             "你是一个智能搜索助手，可以搜索最新的互联网信息来回答问题。"
         )
-    return user_sessions[user_id]
+    return user_sessions[user_id] # 返回llm对象
 
 # ============================================
 # API端点
@@ -93,7 +96,7 @@ async def chat(request: ChatRequest):
                         max_tool_rounds=request.max_tool_rounds
                     ):
                         # 转换为SSE格式
-                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                        yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n" # json.dumps()：将 Python 字典转换为 JSON 字符串
                     
                     # 发送历史记录作为最后一个事件
                     yield f"data: {json.dumps({'type': 'history', 'data': llm.get_history()}, ensure_ascii=False)}\n\n"
@@ -200,11 +203,11 @@ Accept: text/event-stream
     "max_tool_rounds": 3
 }
 
-## 获取历史记录GET
+## GET 获取历史记录
 URL: http://localhost:8000/chat/user123/history
 Content-Type: application/json
 
-## 清除历史记录DELETE
+## DELETE 清除历史记录
 Content-Type: application/json
 http://localhost:8000/chat/user123
 """

@@ -45,8 +45,8 @@ async def tavily_search(
             for i, result in enumerate(results, 1):
                 title = result.get('title', '无标题')
                 url = result.get('url', 'N/A')
-                content = result.get('content', '')[:200]
-                if len(result.get('content', '')) > 200:
+                content = result.get('content', '')[:500]
+                if len(result.get('content', '')) > 500:
                     content += "..."
                 output.append(f"\n{i}. {title}\n   {url}\n   {content}")
         
